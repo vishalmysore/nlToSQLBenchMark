@@ -25,7 +25,11 @@ No backend. No cloud API. No data leaves your machine.
 
 ## Live Demo
 
-> Clone and run locally — requires Chrome 113+ with a GPU for WebGPU support.
+🌐 **[https://vishalmysore.github.io/nlToSQLBenchMark/](https://vishalmysore.github.io/nlToSQLBenchMark/)**
+
+> Requires Chrome 113+ with a GPU (WebGPU). Firefox / Safari not supported yet.
+
+**Or run locally:**
 
 ```bash
 git clone https://github.com/vishalmysore/nlToSQLBenchMark.git

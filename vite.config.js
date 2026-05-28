@@ -31,7 +31,8 @@ export default defineConfig({
       },
     },
   ],
-  base: "./",
+  // Use repo-name base when deploying to GitHub Pages, "./" for local dev
+  base: process.env.VITE_BASE_URL ?? "./",
   worker: {
     format: "es",
   },
