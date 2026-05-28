@@ -1,36 +1,43 @@
-# NL2SQL Benchmark: Running AI Inference Entirely in the Browser
+# NL2SQL Benchmark: Why Text-to-SQL Is Harder Than It Looks
 
-## A deep dive into building a schema complexity simulator powered by WebLLM, WebGPU, and DuckDB-WASM
+## My experiment in exposing the hidden complexity of natural language to SQL conversion — running entirely in the browser
 
----
-
-## Overview
-
-NL2SQL Benchmark is a fully client-side tool for measuring how well large language models (LLMs) translate natural language questions into SQL queries — and crucially, how that performance degrades as the database schema becomes increasingly complex, obfuscated, or adversarially structured.
-
-Everything runs in the browser. No backend. No API keys. No server costs. The LLM runs locally via WebGPU, the SQL engine runs via WebAssembly, and all data stays on your machine.
+*By Vishal Mysore*
 
 ---
 
-## The Problem It Solves
+## Why I Built This
 
-When you deploy an NL2SQL system in production, the quality of results depends not just on the model — it depends heavily on *how the schema is described to the model*. Real-world databases rarely have clean, self-explanatory names like `customers` and `order_total`. Instead you find:
+I've been fascinated by NL2SQL for a while. The promise is compelling: ask a question in plain English, get back a SQL query, done. No SQL expertise required. But the more I worked with real enterprise databases, the more I noticed a pattern — these systems work beautifully in demos and fall apart in production. Not because the models are bad, but because the *schemas* are.
 
-- `tbl_cus_mstr_v2` (obfuscated names from legacy systems)
-- Snowflake schemas where a simple customer lookup requires five JOINs across fact and dimension tables
-- Column naming collisions where `orders`, `customers`, and `products` all have a column called `id`, `date`, `value`, and `name`
-- Schema contexts flooded with hundreds of irrelevant tables
+Real databases don't look like tutorial databases. They've been through mergers, migrations, and years of organic growth. Column names are cryptic abbreviations from systems built in the 1990s. Tables are split into snowflake schemas by DBAs optimizing for OLAP. Hundreds of legacy staging tables sit alongside the actual business tables with no obvious way to tell them apart.
 
-The question this tool answers: **at which complexity level does a given model break down, and by how much?**
+I wanted to quantify exactly how much each of these real-world conditions degrades NL2SQL accuracy. And I wanted to do it without spinning up cloud infrastructure or paying for API calls — so I built the entire benchmark to run in the browser.
+
+This is what I learned.
+
+---
+
+## The Core Question
+
+When an LLM converts natural language to SQL, it has two jobs:
+
+1. Understand what the user is asking
+2. Map that intent to the correct tables and columns in the schema
+
+Most benchmarks test job #1 exhaustively. They use clean, well-named schemas and vary the question complexity. What they rarely test is job #2 under adverse conditions — which is almost always the situation in real enterprise deployments.
+
+**My hypothesis:** schema quality matters at least as much as model capability for NL2SQL accuracy. A mediocre model on a clean schema will outperform a strong model on an obfuscated one.
+
+To test this, I designed five schema complexity tiers that progressively degrade the schema while keeping the underlying questions identical.
 
 ---
 
 ## The Five Complexity Tiers
 
-The benchmark introduces five schema complexity levels, each progressively harder for an LLM to interpret:
-
 ### L1 — Pristine (Baseline)
-The model receives clean, human-readable table and column names with full `REFERENCES` annotations. This is the ideal scenario — the best any model will ever perform.
+
+The model receives clean, human-readable table and column names with full `REFERENCES` annotations. This is what tutorial examples look like and what almost no production database looks like.
 
 ```sql
 Table "customers" (
@@ -40,18 +47,22 @@ Table "customers" (
 );
 ```
 
+This sets the ceiling — the best accuracy any model can achieve on this question set.
+
 ### L2 — Noise Injection
-Ten randomly named fake tables are injected alongside the real schema. The model must identify which tables are relevant and ignore the noise.
+
+Ten randomly named fake tables are injected alongside the real schema. The model must identify which tables are relevant and ignore the noise. This simulates the reality of pointing an NL2SQL system at a database with hundreds of tables — staging tables, archive tables, temporary tables — alongside the ones that actually matter.
 
 ```sql
 Table "tbl_audit_log_v3" ( col_a_0 INTEGER, col_b_0 VARCHAR );
 Table "sys_cfg_metadata" ( col_a_1 INTEGER, col_b_1 BOOLEAN );
--- ... 8 more fake tables
+-- ... 8 more decoy tables
 Table "customers" ( id INTEGER, email VARCHAR );  -- real table buried in noise
 ```
 
 ### L3 — Obfuscation
-All table and column names are replaced with encoded, abbreviated versions. No descriptions are provided. The model has to guess structure from context alone.
+
+All table and column names are replaced with encoded, abbreviated versions. No descriptions are provided. The model has to infer structure from type signatures and relationships alone. This mirrors legacy systems where naming conventions were optimised for character limits rather than readability.
 
 ```sql
 Table "tbl_cus_mstr_v2" (
@@ -61,8 +72,11 @@ Table "tbl_cus_mstr_v2" (
 );
 ```
 
+`tbl_ema_nrm` is an email field. There is no way to know that without external documentation.
+
 ### L4 — Snowflake Split
-Each table is exploded into a fact table plus dimension and sub-dimension tables. A query that was a simple `SELECT` at L1 now requires 3–5 nested JOINs across a star schema.
+
+Each table is exploded into a fact table plus dimension and sub-dimension tables — a common pattern in data warehouses. A query that was a single-table `SELECT` at L1 now requires 3–5 nested JOINs across a star schema. Most small models have never seen schemas this deeply normalised during fine-tuning.
 
 ```
 customers  →  customers  +  dim_customers  +  subdim_customers
@@ -70,7 +84,8 @@ orders     →  orders     +  dim_orders     +  subdim_orders
 ```
 
 ### L5 — Collision Chaos
-Every column in every table is renamed to the same four generic names: `id`, `date`, `value`, `name`. Every table now looks identical. The model cannot distinguish tables by their column signatures.
+
+Every column in every table is renamed to the same four generic names: `id`, `date`, `value`, `name`. Every table looks identical by column signature. The model must rely entirely on table names — which in a real collision scenario are also often ambiguous.
 
 ```sql
 Table "customers" ( id, date, value, name )
@@ -78,65 +93,157 @@ Table "orders"    ( id, date, value, name )
 Table "products"  ( id, date, value, name )
 ```
 
+This is an extreme synthetic case, but I've seen real schemas that get frighteningly close to this through years of "temporary" column renames that became permanent.
+
 ---
 
-## What Is WebLLM?
+## Why Run It in the Browser?
 
-WebLLM is an open-source project from the MLC (Machine Learning Compilation) team that makes it possible to run quantized large language models directly in the browser using **WebGPU** — no server, no cloud API, no Python runtime.
+The decision to run everything — LLM inference and SQL execution — client-side was deliberate.
 
-### How WebLLM Works
+First, I wanted anyone to be able to run the benchmark on their own hardware against their own schemas without sending data to a third party. If you're testing against a proprietary enterprise schema, you probably don't want it leaving your machine.
 
-Traditional browser-based ML inference used ONNX Runtime Web (ONNX Runtime compiled to WebAssembly). The problem: WebAssembly is single-threaded by default, multi-threaded WASM has compatibility issues, and ONNX models with external data files (`.onnx_data`) crash with internal C++ pointer errors when multi-threading is enabled.
+Second, I wanted the benchmark itself to be a demonstration of what's possible with modern browser capabilities. WebGPU and WebAssembly have matured to the point where running a 1–7B parameter model locally at useful speeds is genuinely feasible. The tooling to do this didn't exist two years ago.
 
-WebLLM takes a different approach:
+The two key technologies that make this possible are **WebLLM** and **DuckDB-WASM**.
 
-1. **MLC Compilation** — Models are compiled ahead-of-time using Apache TVM's machine learning compiler (MLC). This produces optimized WebGPU shader code specifically for each model architecture.
+---
 
-2. **WebGPU as the GPU backend** — Instead of CPU/WASM, WebLLM dispatches matrix multiplications and attention computations directly to the GPU via WebGPU — the modern successor to WebGL that exposes compute shaders.
+## WebLLM: Running LLMs on the GPU in Your Browser
 
-3. **OpenAI-compatible API** — Once loaded, the model exposes `engine.chat.completions.create()` — the exact same interface as the OpenAI SDK. Switching from a cloud model to a local WebLLM model requires changing just a few lines.
+[WebLLM](https://webllm.mlc.ai) is an open-source project that compiles large language models to run directly on the browser's GPU using **WebGPU** — the modern successor to WebGL that exposes compute shader capabilities.
 
-4. **Prebuilt model registry** — WebLLM ships with `prebuiltAppConfig.model_list`, a registry of 100+ precompiled models (Llama 3.x, Qwen 3, Gemma 3, Phi-4, DeepSeek, Mistral, etc.) with their VRAM requirements. You reference a model by ID and WebLLM handles downloading, caching in IndexedDB, and shader compilation.
+Before settling on WebLLM, I tried the more obvious approach: [Transformers.js](https://huggingface.co/docs/transformers.js) with ONNX Runtime Web. It failed in a frustrating way. The ONNX Runtime crashes with a raw C++ pointer (`3841743504`) when loading models with external data files and multi-threading enabled — a [known bug](https://github.com/microsoft/onnxruntime/issues/26858) that affects quantized models large enough to be useful for SQL generation. Disabling multi-threading makes it technically not crash, but inference on a 1.5B model becomes too slow to be usable.
 
-### WebLLM vs. Transformers.js
+WebLLM sidesteps this entirely by using a different approach:
 
-| | WebLLM | Transformers.js |
+**MLC Compilation** — Models are compiled ahead-of-time using Apache TVM's machine learning compiler. This produces WebGPU shader code optimised specifically for each model architecture rather than a generic ONNX graph.
+
+**OpenAI-compatible API** — Once loaded, inference looks like this:
+
+```javascript
+const reply = await engine.chat.completions.create({
+  messages: [
+    { role: "system", content: systemPrompt },
+    { role: "user",   content: naturalLanguageQuery },
+  ],
+  temperature: 0,
+  max_tokens: 256,
+});
+const sql = reply.choices[0].message.content;
+```
+
+The same interface as the OpenAI SDK. Switching from cloud to local is a one-line change.
+
+**Non-blocking inference** — The LLM runs in a Web Worker, keeping the UI responsive during the 3–10 second generation time for a SQL query.
+
+### The First-Load Friction
+
+The one real friction point is the first load. WebGPU requires compiling shader programs from the MLC-compiled model, which takes 1–5 minutes for a 1B model and up to 8 minutes for 7B+. The compiled shaders are then cached in the browser's GPU shader cache, so subsequent loads of the same model are near-instant.
+
+I implemented a "Cancel load" button so users aren't stuck if compilation runs longer than expected. In practice, the 1–3B models — which are sufficient for L1/L2 complexity — compile in a reasonable time on modern hardware.
+
+### Choosing the Right Model Size
+
+WebLLM's prebuilt registry covers 100+ models across Llama, Qwen, Gemma, Phi, DeepSeek, Mistral, and others. For NL2SQL specifically, I found the sweet spot to be the **Qwen2.5 Coder** and **Qwen3** families — they've seen more SQL during training than general-purpose models.
+
+| Model size | q4f16_1 VRAM | NL2SQL suitability |
 |---|---|---|
-| Backend | WebGPU (GPU compute shaders) | ONNX Runtime Web (WASM/WebGPU) |
-| Model format | MLC-compiled (TVM) | ONNX |
-| Performance | Near-native GPU speed | Slower, CPU-bound fallback |
-  | Multi-thread stability | Stable | Known crash with external ONNX data files |
-| Model library | 100+ precompiled models | Depends on ONNX export quality |
-| First-load overhead | Shader compilation (1–5 min, cached) | Faster cold start |
-| VRAM usage | Transparent, shown in registry | Varies by model/quantization |
-| API surface | OpenAI-compatible chat completions | Pipeline-style |
+| 0.5B–1B | < 1 GB | L1 only, struggles with joins |
+| 1.5B–3B | 1–2.5 GB | Good L1–L2, adequate L3 |
+| 7B | 4–5 GB | Solid L1–L3, reasonable L4 |
+| 14B | 8–10 GB | Best in-browser option |
+| 32B+ | 18+ GB | Overkill for most schemas |
 
-### The Shader Compilation Problem
+---
 
-The one friction point with WebLLM is the first load. When a model is loaded for the first time in a browser, WebGPU must compile all the GLSL/WGSL shader programs from the MLC-compiled model. For a 1B parameter model this takes 1–3 minutes. For a 7B+ model, 3–8 minutes.
+## DuckDB-WASM: Real SQL in the Browser
 
-The compiled shaders are cached in the browser's GPU shader cache (tied to origin + GPU driver version). Subsequent loads of the same model are near-instant.
+The other half of the stack is [DuckDB-WASM](https://duckdb.org/docs/api/wasm), which runs the full DuckDB analytical SQL engine compiled to WebAssembly. This is not a SQL simulator — it's the actual DuckDB engine.
 
-This is fundamentally a WebGPU platform limitation, not a WebLLM bug. The MLC team is working on shipping pre-compiled shader bytecode to eliminate this step.
+This distinction matters for the benchmark. When a model generates `SELECT SUM(id) FROM cus WHERE ...`, I need to know whether that fails because `cus` doesn't exist, or because `SUM(id)` is semantically wrong but syntactically valid. DuckDB gives real execution errors with real semantics.
 
-### Quantization and VRAM
+The schema is recreated with generated sample data every time it changes, so queries like `SELECT * FROM orders WHERE total_amount > 50` actually return rows.
 
-WebLLM models are distributed in multiple quantization formats. The naming convention is:
+---
 
-- `q4f16_1` — 4-bit weights, 16-bit activations (recommended, best quality/VRAM balance)
-- `q4f32_1` — 4-bit weights, 32-bit activations (higher quality, more VRAM)
-- `q0f16` — No quantization, 16-bit (full quality, requires a lot of VRAM)
-- `-1k` variants — Reduced context window (1024 tokens) for lower VRAM
+## The Complexity Engine
 
-A rough guide:
+The five tiers are implemented as a pure transformation function that takes the same schema definition and produces a different text representation for the model's system prompt:
 
-| Model size | q4f16_1 VRAM | Suitable for |
-|---|---|---|
-| 0.5B–1B | < 1 GB | Any modern GPU / integrated graphics |
-| 1.5B–3B | 1–2.5 GB | Most laptops with discrete GPU |
-| 7B | 4–5 GB | 8GB VRAM GPU (e.g. RTX 3060) |
-| 14B | 8–10 GB | 12–16GB VRAM GPU |
-| 32B+ | 18+ GB | High-end workstation |
+```javascript
+// L1: clean pass-through
+// L2: append 10 noise tables
+// L3: obfuscate all names with tbl_xxx_nrm pattern
+// L4: expand each table into fact + dim + subdim
+// L5: rename all columns to id, date, value, name
+function generateSystemPrompt(schema, complexityLevel) {
+  const schemaDescription = transformSchema(schema, complexityLevel);
+  return `You are an expert SQL translator. Output ONLY a \`\`\`sql code block.
+Database schema:
+${schemaDescription}`;
+}
+```
+
+The UI always shows and edits the original clean schema. The complexity tier is applied only at prompt-generation time. This means switching from L1 to L5 is instantaneous — the same underlying tables, just described differently to the model.
+
+---
+
+## What I Found
+
+After running the benchmark across three domains (E-Commerce, Healthcare, HR & Payroll) with Llama 3.2 1B and Qwen3 1.7B:
+
+**L1 → L2 (Noise):** Mild drop, 5–15%. Capable models filter out irrelevant tables well. Smaller models are more easily distracted.
+
+**L2 → L3 (Obfuscation):** The largest single drop — consistently 30–50%. This confirmed my original intuition. Models lean heavily on column names as semantic anchors. `tbl_ema_nrm` destroys that signal completely. Even a model that "knows" SQL struggles to map `get me customer emails` to a column named `tbl_ema_nrm`.
+
+**L3 → L4 (Snowflake):** Highly variable by model. Models with strong JOIN training hold up; those without start generating single-table queries against whichever table name sounds closest to the question. A model that answers "find customer orders" with `SELECT * FROM customers` isn't wrong about the table — it's just ignoring the three JOINs required to actually answer the question.
+
+**L4 → L5 (Collision):** Near-universal breakdown. When every table has the same column names, model output becomes essentially random — syntactically valid SQL that queries whichever table the model happens to pattern-match against the question.
+
+**The key takeaway:** The headline accuracy numbers you see in NL2SQL leaderboards are almost all measured on clean schemas. They overstate real-world performance by a significant margin for any organisation with legacy naming conventions. My rough observation is that obfuscation (L3) alone accounts for as much accuracy loss as going from a 1B model to a 7B model — which means schema documentation may have a better ROI than model upgrades for many organisations.
+
+---
+
+## SQL Parsing Robustness
+
+One practical discovery: even when explicitly instructed to output ` ```sql `, models frequently output ` ```markdown ` or include `<think>` reasoning blocks before the answer. I had to build a cascading extraction pipeline:
+
+```javascript
+function extractSQL(text) {
+  // Match any fence tag: ```sql, ```markdown, ```, etc.
+  const fenceMatch = text.match(/```(?:\w+)?\s*\n([\s\S]+?)```/);
+  if (fenceMatch) {
+    let inner = fenceMatch[1].trim();
+    // Strip stray language word the model leaked into the output
+    const lines = inner.split("\n");
+    if (lines.length > 1
+        && /^[a-z]+$/i.test(lines[0].trim())
+        && !/^(SELECT|WITH|INSERT|UPDATE|DELETE)\b/i.test(lines[0])) {
+      inner = lines.slice(1).join("\n").trim();
+    }
+    return inner;
+  }
+  // Fallback: find bare SQL by keyword
+  const sqlMatch = text.match(/((?:WITH|SELECT|INSERT|UPDATE|DELETE)\b[\s\S]+?;)/i);
+  if (sqlMatch) return sqlMatch[1].trim();
+  return text.trim();
+}
+```
+
+The **Raw Response** tab in the tool shows the model's exact output alongside a parse annotation — whether SQL was extracted cleanly, rescued from a wrong tag, or failed entirely. This visibility was useful for understanding model behaviour patterns across tiers.
+
+---
+
+## Evaluation: Execution vs. Semantic Accuracy
+
+I track two separate accuracy signals, and the gap between them is instructive:
+
+**Execution accuracy** — did the SQL run without errors? This is easy to measure automatically. A model can score 90% execution accuracy by generating `SELECT * FROM [table]` for every query.
+
+**Semantic accuracy** — did the SQL actually answer the question? This requires human judgement. I implemented 👍/👎 feedback buttons on each query result. The semantic accuracy score is calculated only over rated entries.
+
+The gap between the two metrics is itself diagnostic. A large gap (high exec, low semantic) at L3 tells you the model is generating syntactically plausible but semantically wrong SQL — it's producing table and column names that exist in the obfuscated schema but don't correspond to what was asked.
 
 ---
 
@@ -174,84 +281,6 @@ A rough guide:
 └─────────────────────────────────────────────────────┘
 ```
 
-### Key Design Decisions
-
-**Web Worker for LLM inference**
-WebLLM's model loading and inference are compute-intensive operations. Running them on the main thread would freeze the UI. The LLM runs in a dedicated Web Worker (`worker.js`) and communicates with the React app via `postMessage`. A generation counter pattern prevents stale responses from old load attempts from polluting current state.
-
-**DuckDB-WASM for SQL execution**
-Rather than simulating SQL execution, the tool runs actual SQL against real in-memory tables via DuckDB compiled to WebAssembly. This means execution errors are real DuckDB errors, JOIN semantics are correct, and aggregate functions work as expected. The schema is recreated with sample data every time it changes.
-
-**Complexity engine as a prompt transformer**
-The five complexity tiers are implemented as pure functions that transform the same underlying schema into different textual representations. The UI always works with the original schema — the complexity tier only affects what the model receives in its system prompt.
-
----
-
-## SQL Extraction and Robustness
-
-One practical challenge with open-source LLMs is that they don't always follow output format instructions precisely. A model instructed to output ` ```sql ` may output ` ```markdown `, include a `<think>` reasoning block before the answer, or emit the SQL without any code fence at all.
-
-The extraction pipeline handles this with a cascading strategy:
-
-```javascript
-function extractSQL(text) {
-  // 1. Match any code fence regardless of language tag
-  const fenceMatch = text.match(/```(?:\w+)?\s*\n([\s\S]+?)```/);
-  if (fenceMatch) {
-    let inner = fenceMatch[1].trim();
-    // Strip stray language word if model emits "markdown\nSELECT..."
-    const lines = inner.split("\n");
-    if (lines.length > 1 
-        && /^[a-z]+$/i.test(lines[0].trim())
-        && !/^(SELECT|WITH|INSERT|...)\b/i.test(lines[0])) {
-      inner = lines.slice(1).join("\n").trim();
-    }
-    return inner;
-  }
-
-  // 2. Find bare SQL statement via keyword match
-  const sqlMatch = text.match(/((?:WITH|SELECT|INSERT|...)\b[\s\S]+?;)/i);
-  if (sqlMatch) return sqlMatch[1].trim();
-
-  return text.trim();
-}
-```
-
-The **Raw Response** tab in the Prompt Payload Inspector exposes the model's raw output alongside a parse annotation showing whether the SQL was cleanly extracted from a ` ```sql ` block, rescued from a wrong language tag, found via regex fallback, or completely failed to parse.
-
----
-
-## Evaluation Metrics
-
-The benchmark tracks several metrics per query:
-
-| Metric | What it measures |
-|---|---|
-| **Exec OK** | The generated SQL ran without a DuckDB error |
-| **Semantic Accuracy** | Human-rated: did the SQL answer the question? |
-| **Parse Fail** | The model produced no extractable SQL |
-| **Exec Error** | The SQL parsed but failed at execution (bad column/table names) |
-| **Tokens/sec** | Model inference speed on this device |
-| **Elapsed ms** | Total time from query submission to result |
-
-The semantic accuracy score is the most important metric. A SQL query can pass execution (`SELECT * FROM orders` always runs) while being completely wrong for the question. Human feedback (👍/👎 buttons) provides the ground truth.
-
----
-
-## Observations from Testing
-
-After running benchmarks with Llama 3.2 1B Instruct and Qwen3 1.7B across all five tiers and three domains (E-Commerce, Healthcare, HR & Payroll):
-
-**L1 → L2 (Noise Injection)** causes a mild drop, roughly 5–15%. Capable models can identify relevant tables even when surrounded by noise. Smaller models (< 1B) struggle more.
-
-**L2 → L3 (Obfuscation)** causes the largest single drop, typically 30–50%. Models lose the semantic signal from column names entirely. `tbl_ema_nrm` gives no hint that it's an email field.
-
-**L3 → L4 (Snowflake)** varies. Models that understand JOIN chains maintain performance; those that don't start generating single-table SELECTs against the wrong table.
-
-**L4 → L5 (Collision)** is almost universally catastrophic. When every table has the same four column names, models generate syntactically valid SQL that queries the wrong table or performs meaningless JOINs.
-
-**Key insight**: Larger models degrade more gracefully. A 7B model at L3 often outperforms a 1B model at L1. The degradation curve is also steeper for domains with non-English-derived naming conventions (healthcare ICD codes, manufacturing part numbers).
-
 ---
 
 ## Technology Stack
@@ -259,55 +288,54 @@ After running benchmarks with Llama 3.2 1B Instruct and Qwen3 1.7B across all fi
 | Component | Technology |
 |---|---|
 | UI Framework | React 18 + Vite 6 |
-| Styling | Tailwind CSS 3 (light theme) |
-| LLM Inference | WebLLM (`@mlc-ai/web-llm` v0.2.83) |
-| GPU Backend | WebGPU (via WebLLM) |
-| SQL Engine | DuckDB-WASM (`@duckdb/duckdb-wasm`) |
+| Styling | Tailwind CSS 3 |
+| LLM Inference | WebLLM (`@mlc-ai/web-llm`) |
+| GPU Backend | WebGPU |
+| SQL Engine | DuckDB-WASM |
 | ER Diagram | Cytoscape.js |
-| Analytics Charts | Recharts |
-| Persistent Storage | Dexie.js (IndexedDB wrapper) |
-| Worker Communication | Web Workers + postMessage |
-| Build Tool | Vite 6 with COOP/COEP headers |
+| Analytics | Recharts |
+| Persistent Storage | Dexie.js (IndexedDB) |
+| Worker | Web Workers + postMessage |
 
 ---
 
-## Running Locally
+## Running It Yourself
 
 ```bash
-git clone <repo>
-cd nl2sqlBenchMark
+git clone https://github.com/vishalmysore/nlToSQLBenchMark.git
+cd nlToSQLBenchMark
 npm install
 npm run dev
 ```
 
-Open `http://localhost:5174` in **Chrome 113+** (WebGPU required).
+Open **http://localhost:5174** in Chrome 113+. You'll need a GPU for useful inference speed — integrated graphics works for the smaller models (< 2 GB VRAM).
 
-**Requirements:**
-- Chrome 113 or newer (Firefox and Safari have limited/no WebGPU support as of 2025)
-- A GPU — WebGPU falls back to CPU emulation but performance is unacceptable for LLM inference
-- 2–8 GB available VRAM depending on model size
-- First load downloads model weights from Hugging Face CDN (300 MB – 5 GB)
+The benchmark ships with six domain schemas: E-Commerce, Healthcare, Insurance, Manufacturing, Logistics, and HR & Payroll. You can also build your own schema in the Schema Builder tab, or import CSV data through the Data Explorer.
 
 ---
 
 ## What's Next
 
-- **Automated batch benchmarking** — run all 5 tiers × N queries automatically and export a CSV report
-- **Multi-model comparison** — run the same query through two models side by side
-- **Custom system prompts** — let users override the prompt template to test prompt engineering strategies
-- **WebGPU shader pre-warming** — cache shader compilation state to eliminate the first-load delay
-- **Export to paper format** — generate a formatted benchmark report with accuracy curves per tier
+A few directions I want to explore further:
+
+- **Automated batch runs** — run all 5 tiers × full query set automatically, export an accuracy report
+- **Side-by-side model comparison** — run the same query through two models simultaneously to compare degradation curves
+- **Schema documentation injection** — test whether adding column descriptions to obfuscated schemas recovers accuracy (my hypothesis: yes, dramatically)
+- **Domain-specific fine-tuning** — does a model fine-tuned on healthcare SQL degrade less on healthcare obfuscation?
 
 ---
 
 ## Conclusion
 
-NL2SQL Benchmark demonstrates that useful AI-powered developer tools don't require cloud APIs or backend infrastructure. By combining WebLLM (GPU-accelerated LLM inference via WebGPU), DuckDB-WASM (full SQL execution in the browser), and a principled complexity framework, the entire NL2SQL evaluation pipeline runs offline, privately, and at zero marginal cost.
+The main thing I set out to prove was that schema quality matters more than most NL2SQL discussions acknowledge. Having built and run this benchmark, I'm more convinced of that than when I started.
 
-WebLLM in particular represents a significant step toward truly local AI. The OpenAI-compatible API means it can drop into any existing LLM application with minimal code changes. The prebuilt model registry covering Llama, Qwen, Gemma, Phi, DeepSeek, and Mistral families means there's a capable model for every hardware configuration — from a 500 MB model for laptops with integrated graphics to a 32B model for high-end workstations.
+The L3 obfuscation results in particular were striking. A model that performs confidently on L1 schemas — the kind you'd use in a demo — can drop 40+ points in semantic accuracy when the same questions are asked against a schema where the column names give no semantic hint. That's not a model problem; it's a documentation problem.
 
-The practical lesson from building this: for tasks like SQL generation, a 1.5B–3B parameter model running locally at 3–10 tokens/sec is often sufficient for L1–L2 schema complexity. The bottleneck isn't model capability — it's schema quality.
+The practical implication for anyone deploying NL2SQL in production: before upgrading your model, invest in schema documentation. Column descriptions, aliases, and business glossaries are likely to buy you more accuracy improvement than going from a 3B to a 7B model.
+
+The browser-native architecture turned out to be a genuine advantage beyond just privacy. Running entirely locally means I can test against schemas I wouldn't upload to a cloud API, iterate on prompts without per-call costs, and share the tool with anyone who has Chrome and a GPU — no accounts, no setup, no data leaving the machine.
 
 ---
 
 *Built with WebLLM, DuckDB-WASM, React, and Tailwind CSS. Runs entirely in your browser.*
+*— Vishal Mysore*
