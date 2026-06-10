@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect } from "react";
 import SchemaBuilder from "./components/SchemaBuilder.jsx";
 import SchemaGraph from "./components/SchemaGraph.jsx";
 import ComplexitySlider from "./components/ComplexitySlider.jsx";
+import SemanticLayerToggle from "./components/SemanticLayerToggle.jsx";
 import ModelSelector from "./components/ModelSelector.jsx";
 import QueryPlayground from "./components/QueryPlayground.jsx";
 import PromptViewer from "./components/PromptViewer.jsx";
@@ -13,6 +14,7 @@ import { generateSystemPrompt } from "./lib/complexityEngine.js";
 import { initDuckDB, executeSQL, createTablesFromSchema } from "./lib/duckdb.js";
 import { logQuery, getQueryLogs, clearLogs } from "./lib/storage.js";
 import { DEMO_SCHEMAS, DOMAIN_QUERIES } from "./lib/demoSchemas.js";
+import { getSemanticLayer } from "./lib/semanticLayers.js";
 
 const TABS = [
   { key: "build",     label: "Schema Builder" },
@@ -88,6 +90,7 @@ export default function App() {
   const [activeDomain,    setActiveDomain]    = useState(DEFAULT_DOMAIN);
   const [schema,          setSchema]          = useState(DEMO_SCHEMAS[DEFAULT_DOMAIN]);
   const [complexityLevel, setComplexityLevel] = useState(1);
+  const [semanticLayerOn, setSemanticLayerOn]  = useState(false);
   const [highlightedTable,setHighlightedTable]= useState(null);
   const [selectedModel,   setSelectedModel]   = useState(null);
   const [promptData,      setPromptData]      = useState({ systemPrompt: "", cleanDescription: "", obfuscatedDescription: "" });
@@ -114,10 +117,11 @@ export default function App() {
     createTablesFromSchema(schema).catch(() => {});
   }, [schema, duckdbReady]);
 
-  // Recompute prompt whenever schema or complexity changes
+  // Recompute prompt whenever schema, complexity, or semantic layer toggle changes
   useEffect(() => {
-    setPromptData(generateSystemPrompt(schema, complexityLevel));
-  }, [schema, complexityLevel]);
+    const semanticLayer = semanticLayerOn ? getSemanticLayer(activeDomain) : "";
+    setPromptData(generateSystemPrompt(schema, complexityLevel, semanticLayer));
+  }, [schema, complexityLevel, semanticLayerOn, activeDomain]);
 
   // Load persisted logs on mount
   useEffect(() => {
@@ -132,13 +136,14 @@ export default function App() {
   }
 
   const handleRun = useCallback(async (query) => {
-    const { systemPrompt } = generateSystemPrompt(schema, complexityLevel);
+    const semanticLayer = semanticLayerOn ? getSemanticLayer(activeDomain) : "";
+    const { systemPrompt } = generateSystemPrompt(schema, complexityLevel, semanticLayer);
     let genResult;
     try {
       genResult = await generate(query, systemPrompt);
     } catch (err) {
       const entry = {
-        query, complexityLevel, modelId: loadedModel ?? "none",
+        query, complexityLevel, semanticLayer: semanticLayerOn, modelId: loadedModel ?? "none",
         genSuccess: false, execSuccess: false, error: err.message,
         sql: null, elapsedMs: 0, tokensPerSec: 0, timestamp: Date.now(),
       };
@@ -157,7 +162,7 @@ export default function App() {
     }
 
     const entry = {
-      query, complexityLevel,
+      query, complexityLevel, semanticLayer: semanticLayerOn,
       modelId: genResult.modelId ?? loadedModel,
       genSuccess, execSuccess: execution.success,
       sql: rawSQL, error: execution.error,
@@ -168,7 +173,7 @@ export default function App() {
     setLastResult({ ...genResult, execution });
     setLogs((prev) => [entry, ...prev]);
     await logQuery(entry);
-  }, [schema, complexityLevel, generate, loadedModel, selectedModel, duckdbReady]);
+  }, [schema, complexityLevel, semanticLayerOn, activeDomain, generate, loadedModel, selectedModel, duckdbReady]);
 
   async function handleClearLogs() {
     await clearLogs();
@@ -181,6 +186,11 @@ export default function App() {
   const leftSidebar = (
     <div className="w-80 shrink-0 flex flex-col gap-3 overflow-y-auto">
       <ComplexitySlider level={complexityLevel} onChange={setComplexityLevel} />
+      <SemanticLayerToggle
+        enabled={semanticLayerOn}
+        onChange={setSemanticLayerOn}
+        semanticLayer={getSemanticLayer(activeDomain)}
+      />
       <ModelSelector
         selectedModel={selectedModel}
         onSelectModel={setSelectedModel}

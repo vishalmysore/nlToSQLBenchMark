@@ -70,6 +70,27 @@ export default function DegradationChart({ logs }) {
   const totalCorrect = logs.filter((l) => l.humanFeedback === "correct").length;
   const totalExecOk  = logs.filter((l) => l.genSuccess && l.execSuccess).length;
 
+  // Semantic-layer on vs off comparison
+  const semanticLayerStats = useMemo(() => {
+    const groups = {
+      off: logs.filter((l) => !l.semanticLayer),
+      on:  logs.filter((l) => l.semanticLayer),
+    };
+    const stat = (group) => {
+      const n = group.length;
+      const execOk = group.filter((l) => l.genSuccess && l.execSuccess).length;
+      const rated = group.filter((l) => l.humanFeedback != null);
+      const correct = rated.filter((l) => l.humanFeedback === "correct").length;
+      return {
+        n,
+        execPct: n > 0 ? Math.round((execOk / n) * 100) : null,
+        semanticPct: rated.length > 0 ? Math.round((correct / rated.length) * 100) : null,
+        ratedN: rated.length,
+      };
+    };
+    return { off: stat(groups.off), on: stat(groups.on) };
+  }, [logs]);
+
   if (logs.length === 0) {
     return (
       <div className="panel">
@@ -124,6 +145,36 @@ export default function DegradationChart({ logs }) {
                 : "—"}%
             </div>
             <div className="text-[10px] text-gray-500 mt-0.5">Accuracy gap (exec − semantic)</div>
+          </div>
+        </div>
+      )}
+
+      {/* Semantic layer on/off comparison */}
+      {(semanticLayerStats.off.n > 0 || semanticLayerStats.on.n > 0) && (
+        <div>
+          <div className="text-xs text-gray-500 mb-2">Semantic Layer: With vs. Without</div>
+          <div className="grid grid-cols-2 gap-3">
+            {[
+              { key: "off", title: "Without semantic layer", accent: "border-gray-700/50" },
+              { key: "on",  title: "With semantic layer",     accent: "border-indigo-700/50" },
+            ].map(({ key, title, accent }) => {
+              const s = semanticLayerStats[key];
+              return (
+                <div key={key} className={`bg-gray-800/60 rounded-lg p-3 border ${accent}`}>
+                  <div className="text-[10px] text-gray-400 mb-1.5">{title} (n={s.n})</div>
+                  <div className="flex items-center justify-between">
+                    <div className="text-center flex-1">
+                      <div className="text-xl font-bold text-emerald-400">{s.execPct != null ? `${s.execPct}%` : "—"}</div>
+                      <div className="text-[9px] text-gray-500">exec pass</div>
+                    </div>
+                    <div className="text-center flex-1">
+                      <div className="text-xl font-bold text-sky-400">{s.semanticPct != null ? `${s.semanticPct}%` : "—"}</div>
+                      <div className="text-[9px] text-gray-500">semantic ({s.ratedN} rated)</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

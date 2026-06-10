@@ -102,7 +102,7 @@ function snowflakeSchema(tables) {
  * Generate the system prompt based on schema and complexity level.
  * Returns { systemPrompt, displayClean, displayObfuscated }
  */
-export function generateSystemPrompt(schemaData, complexityLevel) {
+export function generateSystemPrompt(schemaData, complexityLevel, semanticLayer = "") {
   const tables = schemaData?.tables ?? [];
 
   let workingTables = JSON.parse(JSON.stringify(tables)); // deep clone
@@ -170,6 +170,8 @@ export function generateSystemPrompt(schemaData, complexityLevel) {
       .join("\n\n");
   }
 
+  const semanticBlock = semanticLayer ? `\n\n${semanticLayer}` : "";
+
   const systemPrompt = `You are an expert SQL translator. Output ONLY a single SQL code block using exactly this format:
 
 \`\`\`sql
@@ -183,7 +185,7 @@ Rules:
 - Generate valid DuckDB SQL
 
 Database schema:
-${schemaDescription}`;
+${schemaDescription}${semanticBlock}`;
 
   return {
     systemPrompt,

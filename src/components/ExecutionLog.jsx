@@ -136,6 +136,11 @@ export default function ExecutionLog({ logs, onLogsChange, onClear }) {
                 <div className="flex items-center gap-1 mt-0.5 shrink-0 flex-wrap">
                   <StatusBadge log={log} />
                   <LevelBadge level={log.complexityLevel} />
+                  {log.semanticLayer && (
+                    <span className="inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded-md border bg-indigo-50 border-indigo-200 text-indigo-700">
+                      SEM
+                    </span>
+                  )}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-xs text-gray-700 truncate font-medium leading-tight">{log.query}</div>
