@@ -20,6 +20,45 @@ So I decided to add one of those checkpoints to the model picker as a real, sele
 
 ---
 
+## What the Paper Actually Says
+
+Here's the honest summary, not just the citation. **SLM-SQL** starts from a specific, narrow observation: small language models (0.5B–1.5B parameters) are dramatically worse at text-to-SQL than large ones, mostly because they lack the multi-step logical reasoning that SQL generation over a real schema requires. But small models have a real practical edge — they're fast and cheap enough for edge and on-device deployment, which is exactly the constraint my benchmark runs under. So the paper asks: how much of that accuracy gap can be closed through training alone, without just using a bigger model?
+
+Their method has three parts:
+
+1. **Purpose-built training data.** They derived two datasets from the open-source SynSQL-2.5M corpus: `SynSQL-Think-916K` for SQL generation (with reasoning traces), and `SynSQL-Merge-Think-310K` for a second "merge revision" stage — training the model to review and correct multiple candidate SQL outputs into one better answer.
+2. **Supervised fine-tuning, then reinforcement learning.** They start with SFT on the reasoning-annotated data, then apply RL-based post-training (GRPO) on top, which is what actually pushes the accuracy up rather than just teaching the SQL syntax.
+3. **Corrective self-consistency at inference time.** Rather than trusting a single generation, the model samples multiple candidate SQL queries and uses the merge-revision training to pick or synthesize a better final answer — this is where the "Csc" (Corrective Self-Consistency) in the checkpoint name `CscSQL-Merge` comes from, borrowing the technique from the same authors' related [CSC-SQL](https://github.com/CycloneBoy/slm_sql) work.
+
+**Reported results**, evaluated on the BIRD development benchmark (a standard, difficult text-to-SQL dataset): across five small models from 0.5B to 1.5B parameters, this training pipeline lifts execution accuracy by an average of **+31.4 percentage points** over the untrained baseline. Their smallest model — the same 0.5B scale as the checkpoint I'm running — reaches **56.87%** execution accuracy on BIRD dev; their 1.5B model reaches **67.08%** on dev and **70.49%** on the held-out test set. I'm reporting these as the paper's own claimed numbers — I haven't independently re-run the BIRD benchmark myself, so I can't personally vouch for reproducing them, but they're what the authors published.
+
+---
+
+## Why This Approach Has an Edge
+
+The case for a specialized small model over a bigger general one, for this specific use case, comes down to three things:
+
+- **Specialization beats brute-force scale, for a narrow task.** A +31.4 point average jump from training alone is a bigger swing than you'd typically get from just moving up a model-size tier. That's the same thesis my own complexity-tier benchmark is built around, from the other direction — I show that *schema* quality changes accuracy more than model size does; SLM-SQL shows that *task-specific training* changes accuracy more than model size does. Both point at the same conclusion: for text-to-SQL specifically, raw parameter count isn't the lever that matters most.
+- **It's the only realistic option for browser-based inference.** WebGPU inference lives inside a browser tab's GPU memory budget. A 70B general model is simply not on the table here, no matter how good it is — so the real comparison isn't "small specialist vs. giant generalist," it's "small specialist vs. small generalist," and that's the comparison this paper is actually about.
+- **No server, no API cost, no data leaving the browser.** Because the whole point of NL2SQL Benchmark is running 100% client-side, a model that's *both* small enough to fit in-browser *and* specifically trained for the task is the only way to get both privacy/cost benefits and competitive accuracy at the same time.
+
+---
+
+## What I Actually Did — And Didn't Do
+
+I want to be precise about this, because it matters: **I did not train or fine-tune this model.** The machine learning work — the datasets, the SFT, the RL post-training, the corrective self-consistency method — is entirely Lei Sheng and Shuai-Shuai Xu's, published in the SLM-SQL paper and released as real, open checkpoints. None of that is mine to claim.
+
+What I actually did is integration engineering on top of their published work:
+
+1. **Downloaded their real, released checkpoint** — `cycloneboy/CscSQL-Merge-Qwen2.5-Coder-0.5B-Instruct` — exactly as they published it, no modification to the weights or architecture.
+2. **Converted it to run in a browser.** Their checkpoint ships in standard Hugging Face format, meant for server-side inference (PyTorch/Transformers). WebGPU-in-browser inference needs a different runtime format entirely — MLC's compiled representation — so I ran it through `mlc_llm convert_weight`, working around the TVM compiler bug described below along the way. This is a compiler/tooling problem, not a machine-learning one.
+3. **Hosted the converted weights publicly** on my own Hugging Face account, with a full model card documenting exactly what was and wasn't changed.
+4. **Wired it into my app's existing model registry and UI** — the same WebLLM engine, Web Worker, and DuckDB execution path every other model in the picker already uses, plus a badge linking back to the paper so nobody mistakes it for something I built from scratch.
+
+So: research and model = the SLM-SQL authors. Getting that real model to actually run, for free, in a stranger's browser tab, with no server involved = the part I did.
+
+---
+
 ## The Constraint I Set For Myself: No Mocking, Ever
 
 If you've read my other write-up on this project, you know the whole point of NL2SQL Benchmark is that everything runs as genuine, verifiable inference — no canned responses, no simulated progress bars. That constraint made this a harder job than just editing a dropdown list. There was no shortcut where I could fake a "SQL specialist" badge without either lying about what the app does or shipping something that silently doesn't work.
