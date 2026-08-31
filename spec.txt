@@ -1,0 +1,116 @@
+Project Spec: Browser-Based NL2SQL & Schema Complexity Simulator1. OverviewBuild a single-page web application running 100% client-side (deployable directly on GitHub Pages) designed to demonstrate and benchmark how Natural Language to SQL (NL2SQL) translation degrades as underlying relational database schemas increase in structural complexity.The application runs an entirely in-browser text-to-SQL generation pipeline using lightweight, local LLMs via WebGPU/WASM acceleration, completely eliminating external servers, API gateways, or network telemetry.2. Technical Stack & ConstraintsLayerTechnology SelectionConstraints & ImplementationsFrontend UIReact (Vite) + Tailwind CSSSingle-page layout; highly responsive state management.Database EngineDuckDB-WASMIn-memory execution environment for real SQL evaluation.State PersistenceIndexedDB (via idb or Dexie.js)Stores user-created mock schemas, custom tables, and query run logs.Graph VisualizationCytoscape.js or D3.jsInteractive node-edge rendering of tables (nodes) and foreign keys (edges).Local AI Inference@huggingface/transformers (v3)Uses WebGPU-accelerated ONNX runtimes for model execution.🛑 Hard Sandbox ConstraintsZero Network Traffic during Inference: Once a model is cached, text-to-SQL execution must work completely offline.Deterministic VRAM Safety: Maximum allowed local model footprint is capped at ~3.0 GB to prevent browser tab out-of-memory (OOM) crashes across typical consumer laptops.No Server Fallbacks: If WebGPU is unavailable or fails, fallback exclusively to a rule-based deterministic mock parser.3. System Architecture                       +---------------------------------------+
+                       |              Browser UI               |
+                       |  (Schema, Graph, Slider, Playgrounds) |
+                       +---------------------------------------+
+                                       |       ^
+                 User Schema & Queries |       | Output Data & Metrics
+                                       v       |
++---------------------------------------------------------------------------------------+
+|                                    Client-Side Core                                   |
+|                                                                                       |
+|   +--------------------------+  +--------------------------+  +-------------------+   |
+|   |   Complexity Simulator   |  |     DuckDB-WASM Core     |  |   Cytoscape.js    |   |
+|   |  Transforms Prompt/Data  |  |  Executes Generated SQL  |  |   Schema Graph    |   |
+|   +--------------------------+  +--------------------------+  +-------------------+   |
+|                 |                             ^                                       |
+|                 | Injected Schema Context     | Run Evaluation                        |
+|                 v                             |                                       |
+|   +-------------------------------------------+------------+                          |
+|   |               Local Inference Layer                    |                          |
+|   |   (Transformers.js v3 Pipeline + WebGPU Acceleration)  |                          |
+|   |   [ Qwen2.5-Coder-1.5B  |  Phi-3-Mini  |  TinyLlama ]  |                          |
+|   +--------------------------------------------------------+                          |
++---------------------------------------------------------------------------------------+
+4. Feature Specifications4.1 Schema Builder & Graph PanelSchema Definition Interface: A multi-table editor interface allowing users to dynamically create tables, specify columns with explicit data types (INTEGER, VARCHAR, TIMESTAMP), and register relational links (FOREIGN KEY mappings).Graph Engine: Renders an ER-diagram-style interactive knowledge graph.Nodes: Grouped layout containing the Table Name as a header and listing individual Column Names as sub-items.Edges: Directed lines representing FOREIGN KEY -> PRIMARY KEY lines.Dynamic Interaction: Highlighting a table or relation within the UI focuses/zooms the graph node instantly.4.2 The Complexity Simulator EngineA dashboard slider control mapping directly to 5 Discrete Complexity Tiers. Adjusting the slider does not merely tweak the UI; it structurally manipulates the system instructions, prompt layout, and database configuration injected into the local LLM context:Level 1 (Pristine): Normal, clean, explicit tables with highly descriptive column names matching typical user terms (e.g., table customers, column email). Explicit foreign key links provided in system prompts. Only relevant tables included in context.Level 2 (Noise Injection): The engine injects up to 10 completely irrelevant, randomly constructed "decoy" schemas into the LLM system prompt alongside the target tables to measure context-window distraction.Level 3 (Synonym / Structural Obfuscation): Table and column names are programmatically renamed to cryptic variations (e.g., customers becomes tbl_cst_mstr_v2; email becomes str_eml_addr). Semantic column descriptions are omitted.Level 4 (Denormalization / Snowflake Splitting): Splits flat data sets into multi-tiered relational star schemas. To extract simple metrics, the model is forced to determine 3 to 5 multi-tier nested JOIN paths.Level 5 (Ambiguity & Collision Chaos): Introduces structural duplicate names across tables (e.g., labeling unique data entries across separate tables simply as date, id, value without namespace indicators), forcing the model to struggle with explicit table aliasing (A.date = B.date).4.3 In-Browser Local Inference LayerThe engine manages a specialized TextGenerationPipeline via Transformers.js (v3) operating directly over WebGPU.JavaScript// Model Registry Definition for Client Selection
+const MODEL_REGISTRY = {
+  tinyllama: "onnx-community/TinyLlama-1.1B-Chat-v1.0",         // 1.1B (Highly volatile, showcases instant failure cascades)
+  qwen_coder: "onnx-community/Qwen2.5-Coder-1.5B-Instruct",     // 1.5B (SOTA browser code model, highly reliable context target)
+  phi3_mini: "onnx-community/Phi-3-mini-4k-instruct"           // 3.8B (Max execution footprint boundary for browser architecture)
+};
+Memory Management & Lifecycle RulesAggressive Disposal Pipeline: Switching between models must explicitly dispose of the existing model reference, nullify instances, clean out WebGPU execution pipelines, and manually flag garbage collection to prevent cross-contamination memory leaks.Explicit Download Metrics: Connect UI progress indicators to the Transformers.js progress_callback object using the progress_total event stream. Display download tracking per model chunk down to the megabyte.No-WebGPU Native Fallback: Detect client hardware profiles on application load. If WebGPU initialization parameters fail, throw a non-breaking alert interface and switch execution over to standard WASM multi-threading, or fall back to an isolated regex rule-based matching file if system limits are exceeded.5. Technical Implementation Blueprint5.1 Local LLM Initialization WorkerJavaScript// worker.js - Isolate heavy inference modeling outside UI Thread
+import { pipeline, env, ModelRegistry } from "@huggingface/transformers";
+
+env.allowLocalModels = false; 
+env.useWasmCache = true; // Cache runtime WASM segments locally
+
+let currentPipeline = null;
+
+async function initModel(modelId, dtype = "q4") {
+  if (currentPipeline) {
+    // Explicit resource cleaning block
+    await currentPipeline.model?.dispose();
+    currentPipeline = null;
+  }
+
+  currentPipeline = await pipeline("text-generation", modelId, {
+    dtype: dtype, // Force 4-bit quantization layouts globally
+    device: "webgpu",
+    progress_callback: (event) => {
+      if (event.status === "progress_total") {
+        self.postMessage({ status: "downloading", progress: event.progress });
+      }
+    }
+  });
+}
+
+self.onmessage = async (e) => {
+  const { action, modelId, prompt, systemPrompt } = e.data;
+  if (action === "load") {
+    try {
+      await initModel(modelId);
+      self.postMessage({ status: "ready" });
+    } catch (err) {
+      self.postMessage({ status: "error", error: err.message });
+    }
+  }
+  if (action === "generate") {
+    const messages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: prompt }
+    ];
+    
+    const output = await currentPipeline(messages, { 
+      max_new_tokens: 256,
+      temperature: 0.0, // Force strict deterministic outputs for query pipelines
+      do_sample: false 
+    });
+    
+    self.postMessage({ 
+      status: "success", 
+      generatedText: output[0].generated_text.at(-1).content 
+    });
+  }
+};
+5.2 Dynamic System Prompt Context GeneratorJavaScriptfunction generateSystemPrompt(schemaData, complexityLevel) {
+  let schemaDescription = "";
+  
+  if (complexityLevel === 1) {
+    // Level 1: Clean context presentation
+    schemaDescription = schemaData.tables.map(t => {
+      return `Table "${t.name}" (\n` + 
+        t.columns.map(c => `  ${c.name} ${c.type} ${c.isForeignKey ? `REFERENCES ${c.refTable}(${c.refColumn})` : ''}`).join(",\n") +
+        `\n);`;
+    }).join("\n\n");
+  } 
+  else if (complexityLevel >= 3) {
+    // Level 3+: Obfuscate schema names programmatically before injecting to context
+    schemaDescription = schemaData.tables.map(t => {
+      const obfuscatedTableName = obfuscateName(t.name);
+      return `Table "${obfuscatedTableName}" (\n` +
+        t.columns.map(c => `  ${obfuscateName(c.name)} ${c.type}`).join(",\n") +
+        `\n);`;
+    }).join("\n\n");
+  }
+  
+  if (complexityLevel === 2) {
+    // Inject irrelevant dummy data blocks to choke model attention
+    schemaDescription += "\n\n" + generateNoiseSchemas(10);
+  }
+
+  return `You are an expert SQL translator. Generate ONLY executable raw DuckDB SQL code inside a markdown block. Do not explain anything.
+Given the following database schema context:
+${schemaDescription}
+
+Translate the natural language query into valid SQL.`;
+}
+6. Benchmarking & Analytics LayoutThe UI must house an active analytics panel compiling runtime statistics as the user interacts with the system:The Prompt Payload View: A split-screen terminal display comparing the clean schema prompt against the fully bloated, obfuscated, or broken payload string currently being submitted to the local model based on the complexity tier.Live Execution Monitoring: Logs tracking each output query execution into an interactive matrix:MetricMonitored AttributeGeneration StatusSuccessfully Parsed SQL vs. Unparsable Garbage String.Execution StatusValid Execution vs. DuckDB Engine Crash (e.g., Column Not Found, Join Violation).Latency TrackingExact Token-Generation Speeds (tokens/sec) and Total Execution Wall-Time.The Degradation Curve Graph: A running line graph plotted across the 5 complexity tiers tracking historical Success Rates (Successful Executions / Total Queries) across model selections. This layout explicitly visualizes the point where smaller models break down compared to larger contextual architectures.
