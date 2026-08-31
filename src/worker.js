@@ -1,8 +1,16 @@
-import { CreateMLCEngine } from "@mlc-ai/web-llm";
+import { CreateMLCEngine, prebuiltAppConfig } from "@mlc-ai/web-llm";
+import { SQL_SPECIALIST_MODELS } from "./lib/customModels.js";
 
 // WebLLM: MLC-compiled models running on WebGPU in the browser.
 // No ONNX Runtime, no WASM file serving, no external-data bugs.
 // Requires WebGPU. If unavailable, load will fail with an error message.
+
+// Prebuilt registry (100+ models) plus our own real, MLC-converted
+// text-to-SQL fine-tune — see src/lib/customModels.js for provenance.
+const appConfig = {
+  ...prebuiltAppConfig,
+  model_list: [...SQL_SPECIALIST_MODELS, ...prebuiltAppConfig.model_list],
+};
 
 let engine        = null;
 let currentModelId = null;
@@ -54,6 +62,7 @@ self.onmessage = async (e) => {
 
     try {
       engine = await CreateMLCEngine(mlcModelId, {
+        appConfig,
         initProgressCallback: (progress) => {
           if (loadAborted) return;
           const text = progress.text ?? "";

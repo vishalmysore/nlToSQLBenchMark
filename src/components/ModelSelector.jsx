@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { prebuiltAppConfig } from "@mlc-ai/web-llm";
+import { SQL_SPECIALIST_MODELS, SQL_SPECIALIST_INFO } from "../lib/customModels.js";
 
 // ── Parse the full model registry into brand → [{ base, label, variants[] }] ─
 const BRAND_CONFIG = [
@@ -64,7 +65,7 @@ function vramColor(mb) {
 }
 
 function buildRegistry() {
-  const raw = prebuiltAppConfig.model_list;
+  const raw = [...SQL_SPECIALIST_MODELS, ...prebuiltAppConfig.model_list];
   // base → { label, brand, variants: [{id, quant, vramMB}] }
   const map = new Map();
 
@@ -75,7 +76,7 @@ function buildRegistry() {
     const brand = getBrand(m.model_id);
 
     if (!map.has(base)) {
-      map.set(base, { base, label: friendlyLabel(base), brand, variants: [] });
+      map.set(base, { base, label: friendlyLabel(base), brand, special: SQL_SPECIALIST_INFO[base] ?? null, variants: [] });
     }
     map.get(base).variants.push({
       id:     m.model_id,
@@ -256,7 +257,14 @@ export default function ModelSelector({
             <div className="flex-1 min-w-0">
               {selectedEntry ? (
                 <>
-                  <div className="text-xs font-semibold text-gray-800 truncate">{selectedEntry.label}</div>
+                  <div className="text-xs font-semibold text-gray-800 truncate flex items-center gap-1.5">
+                    {selectedEntry.label}
+                    {selectedEntry.special && (
+                      <span className="text-[9px] font-medium text-violet-700 bg-violet-50 border border-violet-200 px-1.5 py-0.5 rounded-full shrink-0">
+                        🗄️ {selectedEntry.special.label}
+                      </span>
+                    )}
+                  </div>
                   <div className="text-[10px] text-gray-400 mt-0.5 flex items-center gap-2">
                     <span className="capitalize">{selectedEntry.brand}</span>
                     {selectedVariant && (
@@ -369,6 +377,19 @@ export default function ModelSelector({
                         </div>
                         <span className="text-gray-400 text-xs shrink-0 ml-1">{isOpen ? "∧" : "∨"}</span>
                       </button>
+
+                      {entry.special && (
+                        <a
+                          href={entry.special.paperHref}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          title={`Fine-tuned for text-to-SQL — ${entry.special.paperLabel}`}
+                          className="mx-3 mb-2 -mt-1 inline-flex items-center gap-1 text-[9px] font-medium text-violet-700 bg-violet-50 border border-violet-200 px-1.5 py-0.5 rounded-full hover:bg-violet-100 transition-colors"
+                        >
+                          🗄️ {entry.special.label}
+                        </a>
+                      )}
 
                       {/* Variants */}
                       {isOpen && (

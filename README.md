@@ -78,6 +78,7 @@ Switch tiers with one click. The **Prompt Payload Inspector** shows you the exac
 
 ### 🤖 Model Selection
 - **100+ prebuilt models** from the WebLLM registry
+- **1 real SQL-specialist model** — a text-to-SQL fine-tune from the SLM-SQL paper, converted to MLC and run alongside the general-purpose models (see [SQL-Specialist Model](#-sql-specialist-model) below)
 - Families: Llama 3.x, Qwen 3 / 2.5 / 2.5 Coder, Gemma 3, Phi-4, DeepSeek, Mistral, SmolLM, and more
 - Filter by brand, search by name
 - VRAM requirements color-coded (green < 2 GB, amber 2–5 GB, red > 5 GB)
@@ -125,6 +126,23 @@ Six built-in demo schemas, each with domain-appropriate example queries:
 | 🏭 Manufacturing | products, components, suppliers, work_orders | "Find components with stock below reorder point" |
 | 🚢 Logistics | shipments, carriers, routes, tracking_events | "Show delayed shipments by carrier" |
 | 👥 HR & Payroll | employees, departments, salaries, performance_reviews | "List employees with salary above department average" |
+
+---
+
+## 🗄 SQL-Specialist Model
+
+Alongside the 100+ general-purpose WebLLM models, the picker includes **CscSQL-Merge-Qwen2.5-Coder-0.5B-Instruct** — a 0.5B model fine-tuned specifically for text-to-SQL, from the paper:
+
+> Lei Sheng & Shuai-Shuai Xu, **"SLM-SQL: An Exploration of Small Language Models for Text-to-SQL"**, arXiv:2507.22478 (Jul 2025). [Paper](https://arxiv.org/abs/2507.22478) · [Code & weights](https://github.com/CycloneBoy/slm_sql)
+
+This is real inference against real fine-tuned weights, not a demo or a mock:
+
+- **Base checkpoint** — [cycloneboy/CscSQL-Merge-Qwen2.5-Coder-0.5B-Instruct](https://huggingface.co/cycloneboy/CscSQL-Merge-Qwen2.5-Coder-0.5B-Instruct), the paper authors' own released model, downloaded and converted directly from Hugging Face.
+- **Conversion** — converted to MLC format at `q0f16` (fp16, not 4-bit) with `mlc_llm convert_weight`. 4-bit group-quantization (`q4f16_1`, what the general-purpose models use) currently hits an [unresolved upstream TVM compiler bug](https://github.com/mlc-ai/mlc-llm/issues/3283) during weight conversion; `q0f16` sidesteps it and is strictly more faithful to the trained weights, at the cost of a larger download than 4-bit would have produced (~960 MB). Full write-up and reproducible steps: [`tools/convert-cscsql-to-mlc.md`](tools/convert-cscsql-to-mlc.md).
+- **Shader reuse** — because CscSQL-Merge is a full fine-tune of the same Qwen2 0.5B architecture WebLLM already ships a compiled WebGPU shader library for, no custom shader compile was needed — only the weights.
+- **Hosted at** — [VishalMysore/CscSQL-Merge-Qwen2.5-Coder-0.5B-Instruct-q0f16-MLC](https://huggingface.co/VishalMysore/CscSQL-Merge-Qwen2.5-Coder-0.5B-Instruct-q0f16-MLC) on Hugging Face, wired in via `src/lib/customModels.js`. The Hugging Face repo carries its own model card (license, usage snippet, and BibTeX citation) alongside the converted weights.
+
+Look for the 🗄️ **SQL specialist** badge in the model picker.
 
 ---
 
@@ -223,7 +241,11 @@ src/
     ├── complexityEngine.js    # Schema → prompt transformer (5 tiers)
     ├── duckdb.js              # DuckDB-WASM init, executeSQL, sample data
     ├── demoSchemas.js         # 6 domain schemas + example queries
+    ├── customModels.js        # SQL-specialist model registry entry (SLM-SQL paper)
     └── storage.js             # Dexie.js query log persistence
+
+tools/
+└── convert-cscsql-to-mlc.md   # Reproducible steps: HF checkpoint → MLC weights
 ```
 
 ---
